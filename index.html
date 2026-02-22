@@ -211,15 +211,10 @@
 
         <div class="instructions">
             <strong>Instructions:</strong><br>
-            1. Get your Mapbox token from: <a href="https://account.mapbox.com/" target="_blank">account.mapbox.com</a><br>
-            2. Paste it below<br>
-            3. Upload your CSV file with columns: House, Street, City, State, Zip<br>
-            4. Click "Geocode Addresses"<br>
-            5. Download your results with Latitude/Longitude filled in
+            1. Upload your CSV file with columns: House, Street, City, State, Zip<br>
+            2. Click "Geocode Addresses"<br>
+            3. Download your results with Latitude/Longitude filled in
         </div>
-
-        <label for="token">Mapbox Access Token:</label>
-        <input type="text" id="token" placeholder="pk.eyJ1...">
 
         <label for="csvFile">Upload CSV File:</label>
         <input type="file" id="csvFile" accept=".csv" onchange="handleCSVUpload(event)">
@@ -271,13 +266,6 @@
         }
 
         async function geocodeAddresses() {
-            const token = document.getElementById('token').value.trim();
-            
-            if (!token) {
-                showStatus('Please enter your Mapbox access token', 'error');
-                return;
-            }
-
             if (!csvData || csvData.length === 0) {
                 showStatus('Please upload a CSV file first', 'error');
                 return;
@@ -303,10 +291,7 @@
                 const address = `${house} ${street}, ${city}, ${state} ${zip}`.trim();
                 
                 try {
-                    const encodedAddress = encodeURIComponent(address);
-                    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodedAddress}.json?access_token=${token}`;
-                    
-                    const response = await fetch(url);
+                    const response = await fetch(`/api/geocode?address=${encodeURIComponent(address)}`);
                     
                     if (!response.ok) {
                         const errorText = await response.text();
