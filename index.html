@@ -305,23 +305,29 @@
                 let address;
                 if (addressCol) {
                     const streetAddress = row[addressCol] || '';
-                    address = `${streetAddress}, ${city}, ${state} ${zip}`.trim();
+                    const parts = [streetAddress, city, [state, zip].filter(Boolean).join(' ')].filter(Boolean);
+                    address = parts.join(', ');
                 } else {
                     const house = (houseCol && row[houseCol]) || '';
                     const street = (streetCol && row[streetCol]) || '';
-                    address = `${house} ${street}, ${city}, ${state} ${zip}`.trim();
+                    const streetAddress = [house, street].filter(Boolean).join(' ');
+                    const parts = [streetAddress, city, [state, zip].filter(Boolean).join(' ')].filter(Boolean);
+                    address = parts.join(', ');
                 }
+
+                if (i === 0) console.log('[Geocoder] Sample address:', address);
                 
                 try {
                     const response = await fetch(`/api/geocode?address=${encodeURIComponent(address)}`);
-                    
+
                     if (!response.ok) {
                         const errorText = await response.text();
-                        throw new Error(`API Error ${response.status}: ${errorText}`);
+                        throw new Error(`API Error ${response.status}: ${errorText.slice(0, 200)}`);
                     }
-                    
+
                     const data = await response.json();
-                    
+                    if (i === 0) console.log('[Geocoder] Sample API response:', data);
+
                     if (data.message) {
                         throw new Error(data.message);
                     }
@@ -357,7 +363,14 @@
             displayResults();
             document.getElementById('geocodeBtn').disabled = false;
             document.getElementById('downloadBtn').style.display = 'inline-block';
-            showStatus(`✓ Complete! Geocoded ${geocodedResults.length} addresses`, 'complete');
+
+            const successCount = geocodedResults.filter(r => r['_status'] === 'success').length;
+            const errorRows = geocodedResults.filter(r => r['_status'] && r['_status'].startsWith('error:'));
+            const notFoundCount = geocodedResults.length - successCount - errorRows.length;
+            let statusMsg = `✓ Complete! ${successCount} of ${geocodedResults.length} geocoded successfully`;
+            if (notFoundCount > 0) statusMsg += `, ${notFoundCount} not found`;
+            if (errorRows.length > 0) statusMsg += `, ${errorRows.length} errors — first: ${errorRows[0]['_status'].slice(0, 120)}`;
+            showStatus(statusMsg, successCount > 0 ? 'complete' : 'error');
         }
 
         function displayResults() {
@@ -381,9 +394,11 @@
             displayRows.forEach(result => {
                 html += '<tr>';
                 displayHeaders.forEach(header => {
-                    html += `<td>${result[header] || ''}</td>`;
+                    html += `<td>${result[header] ?? ''}</td>`;
                 });
-                html += `<td>${result['_status']}</td>`;
+                const status = result['_status'] || '';
+                const statusColor = status === 'success' ? 'color:#166534' : status === 'not found' ? 'color:#92400e' : 'color:#991b1b';
+                html += `<td style="${statusColor};font-weight:700">${status}</td>`;
                 html += '</tr>';
             });
             
