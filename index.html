@@ -211,7 +211,9 @@
 
         <div class="instructions">
             <strong>Instructions:</strong><br>
-            1. Upload your CSV file with columns: House, Street, City, State, Zip<br>
+            1. Upload your CSV file with address columns and City, State (Zip optional)<br>
+            &nbsp;&nbsp;&nbsp;<strong>Option A:</strong> Address, City, State, Zip<br>
+            &nbsp;&nbsp;&nbsp;<strong>Option B:</strong> House, Street, City, State, Zip<br>
             2. Click "Geocode Addresses"<br>
             3. Download your results with Latitude/Longitude filled in
         </div>
@@ -219,7 +221,7 @@
         <label for="csvFile">Upload CSV File:</label>
         <input type="file" id="csvFile" accept=".csv" onchange="handleCSVUpload(event)">
         <div class="csv-info">
-            CSV should have columns: House, Street, City, State, Zip (Latitude, Longitude, Resident Name are optional)
+            CSV should have either: Address, City, State — or — House, Street, City, State (Zip, Latitude, Longitude, Resident Name are optional)
         </div>
 
         <div id="csvPreview" style="margin-top: 15px; display: none;">
@@ -274,21 +276,35 @@
             geocodedResults = [];
             document.getElementById('geocodeBtn').disabled = true;
             document.getElementById('downloadBtn').style.display = 'none';
-            
+
             showStatus(`Processing 0 of ${csvData.length} addresses...`, 'processing');
+
+            // Detect which address format is present (case-insensitive column matching)
+            const addressCol = csvHeaders.find(h => h.toLowerCase() === 'address');
+            const houseCol = csvHeaders.find(h => h.toLowerCase() === 'house');
+            const streetCol = csvHeaders.find(h => h.toLowerCase() === 'street');
+            const cityCol = csvHeaders.find(h => h.toLowerCase() === 'city');
+            const stateCol = csvHeaders.find(h => h.toLowerCase() === 'state');
+            const zipCol = csvHeaders.find(h => h.toLowerCase() === 'zip');
 
             for (let i = 0; i < csvData.length; i++) {
                 const row = csvData[i];
                 showStatus(`Processing ${i + 1} of ${csvData.length} addresses...`, 'processing');
-                
+
                 // Build address from CSV columns
-                const house = row['House'] || '';
-                const street = row['Street'] || '';
-                const city = row['City'] || '';
-                const state = row['State'] || '';
-                const zip = row['Zip'] || '';
-                
-                const address = `${house} ${street}, ${city}, ${state} ${zip}`.trim();
+                const city = (cityCol && row[cityCol]) || '';
+                const state = (stateCol && row[stateCol]) || '';
+                const zip = (zipCol && row[zipCol]) || '';
+
+                let address;
+                if (addressCol) {
+                    const streetAddress = row[addressCol] || '';
+                    address = `${streetAddress}, ${city}, ${state} ${zip}`.trim();
+                } else {
+                    const house = (houseCol && row[houseCol]) || '';
+                    const street = (streetCol && row[streetCol]) || '';
+                    address = `${house} ${street}, ${city}, ${state} ${zip}`.trim();
+                }
                 
                 try {
                     const response = await fetch(`/api/geocode?address=${encodeURIComponent(address)}`);
