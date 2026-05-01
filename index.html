@@ -26,11 +26,12 @@
 
         body {
             font-family: 'Merriweather', Georgia, serif;
-            max-width: 900px;
+            width: min(900px, calc(100% - 40px));
             margin: 50px auto;
             padding: 20px;
             background-color: var(--paper);
             color: var(--ink);
+            box-sizing: border-box;
         }
         .container {
             background: var(--card);
@@ -38,7 +39,7 @@
             border: 2px solid var(--border);
             border-radius: 0;
             box-shadow: var(--shadow);
-            overflow-x: hidden;
+            box-sizing: border-box;
         }
         h1 {
             font-family: 'Chivo', sans-serif;
@@ -47,6 +48,9 @@
             margin-bottom: 10px;
             display: flex;
             align-items: center;
+            flex-wrap: wrap;
+            font-size: clamp(30px, 5vw, 42px);
+            line-height: 1.05;
         }
         .title-icon {
             height: 36px;
@@ -99,6 +103,9 @@
         textarea {
             min-height: 150px;
             resize: vertical;
+        }
+        #pasteInput {
+            min-height: 110px;
         }
         button {
             background-color: var(--gold);
@@ -158,13 +165,21 @@
             color: var(--clay);
             display: block;
         }
+        #status.warning {
+            background-color: #FEF3C7;
+            border: 2px solid var(--gold);
+            color: var(--ink);
+            display: block;
+        }
         #results {
             margin-top: 20px;
             overflow-x: auto;
             width: 100%;
+            padding-bottom: 8px;
         }
         table {
             width: 100%;
+            min-width: 760px;
             border-collapse: collapse;
             font-size: 12px;
             border: 2px solid var(--border);
@@ -172,6 +187,8 @@
         th, td {
             padding: 8px;
             text-align: left;
+            vertical-align: top;
+            overflow-wrap: anywhere;
         }
         th {
             background-color: var(--navy);
@@ -189,6 +206,25 @@
         tr:nth-child(even) td {
             background-color: var(--paper);
         }
+        .drop-zone {
+            border: 2px dashed var(--border-light);
+            background: var(--paper);
+            padding: 18px;
+            margin-top: 5px;
+            transition: border-color 0.1s ease, background-color 0.1s ease;
+        }
+        .drop-zone.drag-over {
+            border-color: var(--navy);
+            background: #F0F4F8;
+        }
+        .drop-zone p {
+            margin: 0 0 10px;
+            color: var(--ink-secondary);
+            font-size: 13px;
+        }
+        .paste-actions button {
+            margin-top: 10px;
+        }
         .csv-info {
             font-size: 12px;
             color: var(--ink-secondary);
@@ -203,6 +239,20 @@
             font-size: 12px;
             margin-top: 5px;
             font-family: 'Merriweather', Georgia, serif;
+        }
+        @media (max-width: 640px) {
+            body {
+                width: calc(100% - 20px);
+                margin: 20px auto;
+                padding: 10px;
+            }
+            .container {
+                padding: 20px;
+            }
+            button {
+                width: 100%;
+                margin-right: 0;
+            }
         }
     </style>
 </head>
@@ -221,9 +271,28 @@
         </div>
 
         <label for="csvFile">Upload CSV File:</label>
-        <input type="file" id="csvFile" accept=".csv" onchange="handleCSVUpload(event)">
+        <div
+            id="dropZone"
+            class="drop-zone"
+            ondragenter="handleDragEnter(event)"
+            ondragover="handleDragOver(event)"
+            ondragleave="handleDragLeave(event)"
+            ondrop="handleDrop(event)"
+        >
+            <p>Drag and drop a CSV here, or choose one from your computer.</p>
+            <input type="file" id="csvFile" accept=".csv" onchange="handleCSVUpload(event)">
+        </div>
         <div class="csv-info">
             CSV should have either: Address, City, State — or — House, Street, City, State (Zip, Latitude, Longitude, Resident Name are optional)
+        </div>
+
+        <label for="pasteInput">Or Paste CSV / Address List:</label>
+        <textarea id="pasteInput" placeholder="Paste CSV with headers, or paste one full address per line"></textarea>
+        <div class="paste-actions">
+            <button type="button" onclick="loadPastedInput()">Load Pasted Text</button>
+        </div>
+        <div class="csv-info">
+            If pasted text has recognized headers, it loads as CSV. Otherwise, each line is treated as a full Address.
         </div>
 
         <div id="csvPreview" style="margin-top: 15px; display: none;">
@@ -246,24 +315,160 @@
         let latCol = 'Latitude';
         let lonCol = 'Longitude';
 
+        function findHeader(name) {
+            return csvHeaders.find(h => h.trim().toLowerCase() === name);
+        }
+
+        function getCell(row, header) {
+            return header ? String(row[header] || '').trim() : '';
+        }
+
+        function escapeHtml(value) {
+            return String(value || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        async function fetchJson(url) {
+            const response = await fetch(url);
+            const text = await response.text();
+            let data = {};
+
+            try {
+                data = text ? JSON.parse(text) : {};
+            } catch (error) {
+                data = { error: text || response.statusText };
+            }
+
+            if (!response.ok) {
+                const message = data.message || data.error || response.statusText;
+                throw new Error(`API Error ${response.status}: ${message}`);
+            }
+
+            return data;
+        }
+
+        async function geocodeAddress(address) {
+            return fetchJson(`/api/geocode?address=${encodeURIComponent(address)}`);
+        }
+
         function handleCSVUpload(event) {
             const file = event.target.files[0];
+            parseCSVFile(file);
+        }
+
+        function loadDataset(rows, headers, sourceLabel) {
+            const cleanRows = rows.filter(row =>
+                Object.values(row).some(value => String(value || '').trim())
+            );
+            const cleanHeaders = headers.filter(Boolean);
+
+            if (cleanRows.length === 0 || cleanHeaders.length === 0) {
+                showStatus(`No usable rows found in ${sourceLabel}`, 'error');
+                return;
+            }
+
+            csvData = cleanRows;
+            csvHeaders = cleanHeaders;
+            geocodedResults = [];
+
+            document.getElementById('results').innerHTML = '';
+            document.getElementById('downloadBtn').style.display = 'none';
+
+            const preview = `Loaded ${csvData.length} rows with columns: ${csvHeaders.join(', ')}`;
+            document.getElementById('previewContent').textContent = preview;
+            document.getElementById('csvPreview').style.display = 'block';
+            document.getElementById('geocodeBtn').style.display = 'inline-block';
+
+            showStatus(`✓ Loaded ${csvData.length} rows from ${sourceLabel}`, 'complete');
+        }
+
+        function looksLikePastedCSV(text) {
+            const firstLine = text.split(/\r?\n/).find(line => line.trim());
+            if (!firstLine) return false;
+
+            const parsedHeader = Papa.parse(firstLine.trim()).data[0] || [];
+            const knownHeaders = ['address', 'house', 'street', 'city', 'state', 'zip'];
+            return parsedHeader.some(header => knownHeaders.includes(String(header).trim().toLowerCase()));
+        }
+
+        function loadPastedInput() {
+            const text = document.getElementById('pasteInput').value.trim();
+            if (!text) {
+                showStatus('Paste CSV text or one address per line first', 'error');
+                return;
+            }
+
+            if (looksLikePastedCSV(text)) {
+                Papa.parse(text, {
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: function(results) {
+                        loadDataset(results.data, results.meta.fields || [], 'pasted CSV');
+                    },
+                    error: function(error) {
+                        showStatus('Error parsing pasted CSV: ' + error.message, 'error');
+                    }
+                });
+                return;
+            }
+
+            const rows = text
+                .split(/\r?\n/)
+                .map(line => line.trim())
+                .filter(Boolean)
+                .map(address => ({ Address: address }));
+
+            loadDataset(rows, ['Address'], 'pasted address list');
+        }
+
+        function isCSVFile(file) {
+            return file && (file.name.toLowerCase().endsWith('.csv') || file.type === 'text/csv');
+        }
+
+        function setDropZoneActive(isActive) {
+            document.getElementById('dropZone').classList.toggle('drag-over', isActive);
+        }
+
+        function handleDragEnter(event) {
+            event.preventDefault();
+            setDropZoneActive(true);
+        }
+
+        function handleDragOver(event) {
+            event.preventDefault();
+            setDropZoneActive(true);
+        }
+
+        function handleDragLeave(event) {
+            if (!event.currentTarget.contains(event.relatedTarget)) {
+                setDropZoneActive(false);
+            }
+        }
+
+        function handleDrop(event) {
+            event.preventDefault();
+            setDropZoneActive(false);
+
+            const file = event.dataTransfer.files[0];
+            parseCSVFile(file);
+        }
+
+        function parseCSVFile(file) {
             if (!file) return;
+            if (!isCSVFile(file)) {
+                showStatus('Please upload a CSV file', 'error');
+                return;
+            }
 
             Papa.parse(file, {
                 header: true,
                 skipEmptyLines: true,
                 complete: function(results) {
-                    csvData = results.data;
-                    csvHeaders = results.meta.fields;
-                    
-                    // Show preview
-                    let preview = `Loaded ${csvData.length} rows with columns: ${csvHeaders.join(', ')}`;
-                    document.getElementById('previewContent').textContent = preview;
-                    document.getElementById('csvPreview').style.display = 'block';
-                    document.getElementById('geocodeBtn').style.display = 'inline-block';
-                    
-                    showStatus(`✓ Loaded ${csvData.length} rows from CSV`, 'complete');
+                    loadDataset(results.data, results.meta.fields || [], 'CSV');
                 },
                 error: function(error) {
                     showStatus('Error parsing CSV: ' + error.message, 'error');
@@ -284,43 +489,43 @@
             showStatus(`Processing 0 of ${csvData.length} addresses...`, 'processing');
 
             // Detect which address format is present (case-insensitive column matching)
-            const addressCol = csvHeaders.find(h => h.toLowerCase() === 'address');
-            const houseCol = csvHeaders.find(h => h.toLowerCase() === 'house');
-            const streetCol = csvHeaders.find(h => h.toLowerCase() === 'street');
-            const cityCol = csvHeaders.find(h => h.toLowerCase() === 'city');
-            const stateCol = csvHeaders.find(h => h.toLowerCase() === 'state');
-            const zipCol = csvHeaders.find(h => h.toLowerCase() === 'zip');
-            latCol = csvHeaders.find(h => h.toLowerCase() === 'latitude') || 'Latitude';
-            lonCol = csvHeaders.find(h => h.toLowerCase() === 'longitude') || 'Longitude';
+            const addressCol = findHeader('address');
+            const houseCol = findHeader('house');
+            const streetCol = findHeader('street');
+            const cityCol = findHeader('city');
+            const stateCol = findHeader('state');
+            const zipCol = findHeader('zip');
+            latCol = findHeader('latitude') || 'Latitude';
+            lonCol = findHeader('longitude') || 'Longitude';
+            let successCount = 0;
+            let notFoundCount = 0;
+            let errorCount = 0;
 
             for (let i = 0; i < csvData.length; i++) {
                 const row = csvData[i];
                 showStatus(`Processing ${i + 1} of ${csvData.length} addresses...`, 'processing');
 
                 // Build address from CSV columns
-                const city = (cityCol && row[cityCol]) || '';
-                const state = (stateCol && row[stateCol]) || '';
-                const zip = (zipCol && row[zipCol]) || '';
+                const city = getCell(row, cityCol);
+                const state = getCell(row, stateCol);
+                const zip = getCell(row, zipCol);
 
                 let address;
                 if (addressCol) {
-                    const streetAddress = row[addressCol] || '';
+                    const streetAddress = getCell(row, addressCol);
                     address = `${streetAddress}, ${city}, ${state} ${zip}`.trim();
                 } else {
-                    const house = (houseCol && row[houseCol]) || '';
-                    const street = (streetCol && row[streetCol]) || '';
+                    const house = getCell(row, houseCol);
+                    const street = getCell(row, streetCol);
                     address = `${house} ${street}, ${city}, ${state} ${zip}`.trim();
                 }
                 
                 try {
-                    const response = await fetch(`/api/geocode?address=${encodeURIComponent(address)}`);
-                    
-                    if (!response.ok) {
-                        const errorText = await response.text();
-                        throw new Error(`API Error ${response.status}: ${errorText}`);
+                    if (!address.replace(/[,\s]/g, '')) {
+                        throw new Error('row has no address data');
                     }
-                    
-                    const data = await response.json();
+
+                    const data = await geocodeAddress(address);
                     
                     if (data.message) {
                         throw new Error(data.message);
@@ -334,10 +539,12 @@
                         result[latCol] = feature.center[1];
                         result[lonCol] = feature.center[0];
                         result['_status'] = 'success';
+                        successCount++;
                     } else {
                         result[latCol] = '';
                         result[lonCol] = '';
                         result['_status'] = 'not found';
+                        notFoundCount++;
                     }
                     
                     geocodedResults.push(result);
@@ -348,6 +555,7 @@
                     result[lonCol] = '';
                     result['_status'] = 'error: ' + error.message;
                     geocodedResults.push(result);
+                    errorCount++;
                 }
                 
                 // Rate limiting - wait 100ms between requests
@@ -357,7 +565,9 @@
             displayResults();
             document.getElementById('geocodeBtn').disabled = false;
             document.getElementById('downloadBtn').style.display = 'inline-block';
-            showStatus(`✓ Complete! Geocoded ${geocodedResults.length} addresses`, 'complete');
+            const summary = `${successCount} geocoded, ${notFoundCount} not found, ${errorCount} errors`;
+            const statusType = errorCount === csvData.length ? 'error' : (errorCount || notFoundCount ? 'warning' : 'complete');
+            showStatus(`Complete: ${summary}`, statusType);
         }
 
         function displayResults() {
@@ -372,7 +582,7 @@
             // Headers
             html += '<tr>';
             displayHeaders.forEach(header => {
-                html += `<th>${header}</th>`;
+                html += `<th>${escapeHtml(header)}</th>`;
             });
             html += '<th>Status</th></tr>';
 
@@ -381,9 +591,9 @@
             displayRows.forEach(result => {
                 html += '<tr>';
                 displayHeaders.forEach(header => {
-                    html += `<td>${result[header] || ''}</td>`;
+                    html += `<td>${escapeHtml(result[header])}</td>`;
                 });
-                html += `<td>${result['_status']}</td>`;
+                html += `<td>${escapeHtml(result['_status'])}</td>`;
                 html += '</tr>';
             });
             
